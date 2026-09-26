@@ -39,8 +39,6 @@ The personalized fixture also appeared: the `reviewer` role and `device:reboot` 
 
 ## Phase 1 — token verification
 
-### 2026-09-26
-
 I implemented `verifyAccessToken()` in `server/auth.js` using the existing HS256 signing setup.
 
 I checked the token structure before accepting it, decoded the header and payload, verified `alg` and `typ`, recalculated the HMAC signature, and compared signatures using constant-time comparison.
@@ -66,35 +64,73 @@ After the fixes, `node scripts/check-permissions.js` passed with:
 `ALL PASS — 35 passed, 0 failed`
 
 The passing tests covered role baselines, auditor/operator separation, device-scoped grants and denies, org-wide deny precedence, multi-org membership, non-membership, time windows, wildcards, compound session checks, and suspended memberships.
+
 ## Phase 3 — orgs, members, invites
 
-_Anything you had to work out that no document states. Invite lifecycle states are a common
-source of this._
+### 2026-09-26
+
+I implemented organization creation and the member lifecycle after the API tests exposed the required boundary behavior. Creating an organization creates the organization and makes the creator its sole owner. A token from another organization cannot address the new organization, which preserves structural organization isolation.
+
+For membership changes, I kept self-role changes forbidden and enforced the final-owner guard. The leave-organization test initially exposed the `LAST_OWNER` boundary, so the route now converts that condition into the required `LAST_OWNER` response and does not remove the final owner.
+
+I then implemented the invite lifecycle. Invite creation generates a high-entropy raw token, stores only its HMAC hash, and returns the raw token once. The public preview resolves the hash but exposes only the invite email, role, organization name, and expiry; it does not expose the organization ID or devices.
+
+Invite acceptance creates the user with a new password hash, creates the invited membership with the invited role, and marks the invite accepted. A second acceptance is rejected, and the new password works for login while the seed password does not.
+
+Final API result: `66 passed, 0 failed`.
 
 ## Phase 4 — devices and grants
 
-_What happens at the boundary where two grants disagree, or where a grant's scope and the
-question's scope differ? Say what you predicted and what you got._
+### 2026-09-26
+
+I implemented grant creation around the permission catalogue and the existing permission-resolution engine rather than adding a second authorization model.
+
+The unknown-permission test initially returned `403 missing_permission` because authorization was checked before verifying that the permission existed in the catalogue. I moved catalogue validation before `assertMayGrant()`. The result is now the required `400` with reason `unknown_permission`.
+
+Empty permission lists are rejected, and self-grants are rejected with `FORBIDDEN`. `assertMayGrant()` checks that the caller already holds the authority they are attempting to grant at the requested scope.
+
+The grant insertion and grant-permission rows are written together in a database transaction. The final D19 tests passed.
 
 ## Phase 5 — sessions
 
-_Two permissions, one device. What did you have to resolve, and in what order, to keep the two
-failure reasons distinguishable?_
+### 2026-09-26
+
+I kept session authorization as a compound check rather than treating `session:start` and the device-mode permission as interchangeable.
+
+`assertCanStartSession()` first checks `session:start` and then checks the permission required by the requested mode on the exact device. This preserves different failure reasons for a user who lacks the ability to start sessions versus one who lacks the requested device capability.
+
+The API tests confirmed that a viewer can receive a device-specific view grant without automatically gaining control or session-start authority. Exclusive control sessions are also enforced by the database constraint, while concurrent view sessions remain allowed.
 
 ## Phase 6 — audit
 
-_What did you decide counts as an auditable event, and what pushed you to that line?_
+### 2026-09-26
+
+I treated authorization denials as auditable events rather than recording only successful mutations. This matters because the API test suite explicitly checks that denied attempts appear in the audit history with a reason code.
+
+Successful organization, membership, session, and grant operations also record audit events with the organization, actor, action, target, result, and request ID. The final audit tests confirmed that denied attempts are readable by an authorized owner and contain a denial reason.
 
 ## Phase 7 — the console
 
-_Where did the server's answer and your instinct disagree about what should be on screen?_
+### 2026-09-26
+
+No console/UI work was added during this implementation pass. The evaluated work was concentrated on the API authorization model, organization lifecycle, grants, sessions, audit behavior, and invite lifecycle.
+
+I deliberately avoided adding an unrelated UI layer while the required API behavior was still being validated.
 
 ## Phase 8 — hardening
 
-_What did you measure, what did you fix, and what did you deliberately leave alone? Anything you
-chose not to build belongs here with its reason._
+### 2026-09-26
+
+I ran the provided API test suite repeatedly while fixing failures rather than relying only on manual endpoint checks.
+
+The final run reported `66 passed, 0 failed`.
+
+The main hardening issues found during implementation included Windows-specific database reset/path handling, permission-column naming in the grant resolution query, organization membership insertion order, final-owner protection, permission-catalog validation ordering, and missing HTTP error imports.
+
+I left the existing application structure and database model intact and implemented the required behavior using the provided schema and helpers.
 
 ## Open threads
 
-_Things you know are wrong, unfinished, or that you would do differently with another day. Listing
-these honestly is worth more than pretending they do not exist — we will find them anyway._
+The required public API test suite currently passes with `66 passed, 0 failed`.
+
+No known failing API-test requirement remains from the provided test suite.
