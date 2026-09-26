@@ -26,8 +26,16 @@ Note: this is the failure mode where a passing test is worse than a failing one.
 
 ## Phase 0 — orientation
 
-_Installed, reset the database, read the documents, ran the suites against the untouched skeleton.
-What did the starting line actually look like, and which failure surprised you?_
+
+### 2026-09-26
+
+Expected the database reset command to work directly from my Windows PowerShell environment. The `npm run db:reset` command failed because its script uses the Unix `rm` command, which PowerShell did not recognize.
+
+I removed the database files manually and ran `npm run db:load`, which then exposed a Windows path issue in `scripts/load-db.js`: the generated schema path contained `C:\C:\...`.
+
+I changed the URL-to-path conversion to use `fileURLToPath`. After that, the database loaded successfully with 3 organizations, 8 users, 10 memberships, 9 devices, 6 grants, 3 sessions, and 7 audit events.
+
+The personalized fixture also appeared: the `reviewer` role and `device:reboot` permission were present, including an allow on one device and a deny on another. This confirmed that the permission model cannot be based only on the documented roles and permissions.
 
 ## Phase 1 — token verification
 
