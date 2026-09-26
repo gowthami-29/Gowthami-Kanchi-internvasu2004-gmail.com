@@ -1,29 +1,121 @@
-// Append-only audit writes.
-//
-// YOURS TO WRITE. This file ships as a stub.
-//
-// audit_events has BEFORE UPDATE / BEFORE DELETE triggers, so this module only ever
-// INSERTs. Two things the spec is explicit about (BRIEF.md §4, PERMISSIONS.md §8):
-//
-//   - DENIED attempts are recorded, not just successes. A log that only holds
-//     successes cannot answer "who tried to change what".
-//   - a single action produces a single row. Write the success row inside the same
-//     transaction as the change it describes; do not also log the allow from a wrapper.
-//
-// Schema columns: id, org_id (NOT NULL), actor_id, action, target_type, target_id,
-// result ('allow'|'deny'), reason_code, request_id, at.
+import { randomUUID } from 'node:crypto';
 
 const todo = (name) =>
   Object.assign(
-    new Error(`TODO: server/audit.js — ${name}() is yours to write (BRIEF.md §3).`),
+    new Error(`TODO: server/audit.js — ${name}() is yours to write.`),
     { code: 'NOT_IMPLEMENTED' }
   );
 
-export function audit(db, { orgId, actorId, action, targetType, targetId, result, reasonCode, requestId }) {
-  throw todo('audit');
+/**
+ * Append one audit event.
+ *
+ * Audit is append-only. The database triggers prevent UPDATE/DELETE,
+ * so this function only ever INSERTs.
+ */
+export function audit(
+  db,
+  {
+    orgId,
+    actorId,
+    action,
+    targetType = null,
+    targetId = null,
+    result,
+    reasonCode = null,
+    requestId = null,
+  }
+) {
+  if (!orgId) {
+    throw new Error('audit requires orgId');
+  }
+
+  if (!actorId) {
+    throw new Error('audit requires actorId');
+  }
+
+  if (!action) {
+    throw new Error('audit requires action');
+  }
+
+  if (result !== 'allow' && result !== 'deny') {
+    throw new Error('audit result must be allow or deny');
+  }
+
+  const id = randomUUID();
+
+  db.prepare(`
+    INSERT INTO audit_events (
+      id,
+      org_id,
+      actor_id,
+      action,
+      target_type,
+      target_id,
+      result,
+      reason_code,
+      request_id
+    )
+    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+  `).run(
+    id,
+    orgId,
+    actorId,
+    action,
+    targetType,
+    targetId,
+    result,
+    reasonCode,
+    requestId
+  );
+
+  return db
+    .prepare(`
+      SELECT
+        id,
+        org_id,
+        actor_id,
+        action,
+        target_type,
+        target_id,
+        result,
+        reason_code,
+        request_id,
+        at
+      FROM audit_events
+      WHERE id = ?
+    `)
+    .get(id);
 }
 
-// Run fn(); if it refuses with a permission error, record the denial before rethrowing.
+/**
+ * Run an operation and record denied permission attempts.
+ *
+ * Successful operations are responsible for recording their own
+ * success audit row inside the same transaction as the mutation.
+ */
 export function auditDenials(db, ctx, meta, fn) {
-  throw todo('auditDenials');
+  try {
+    return fn();
+  } catch (error) {
+    const permissionError =
+      error?.status === 403 ||
+      error?.statusCode === 403 ||
+      error?.code === 'FORBIDDEN' ||
+      error?.code === 'PERMISSION_DENIED';
+
+    if (permissionError) {
+      audit(db, {
+        orgId: ctx.orgId,
+        actorId: ctx.userId,
+        action: meta.action,
+        targetType: meta.targetType ?? null,
+        targetId: meta.targetId ?? null,
+        result: 'deny',
+        reasonCode: error.reason ?? error.reasonCode ?? 'forbidden',
+        requestId: ctx.requestId ?? null,
+      });
+    }
+
+    throw error;
+  }
 }

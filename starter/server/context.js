@@ -1,29 +1,113 @@
 // Per-request context: turn a bearer token into an authenticated caller.
-//
-// YOURS TO WRITE. This file ships as a stub so the server boots and every
-// authenticated request fails loudly instead of appearing to work.
-//
-// What it has to do (BRIEF.md §3, PERMISSIONS.md §6):
-//   - read the bearer token, verify it with verifyAccessToken() from ./auth.js
-//   - look the membership up and refuse a token whose org or membership is gone
-//   - THE TOKEN'S org CLAIM IS THE ONLY ORG THE CALLER MAY ADDRESS. A request that
-//     names a different org is INVISIBLE — 404, never 403. Isolation is structural:
-//     the caller cannot name another org, rather than being filtered afterwards.
-//   - check freshness against memberships.perm_version (AUTH-DATA-MODEL.md §3), so a
-//     role or grant change takes effect on the NEXT request, not at token expiry
-//   - throw through the one error path in ./http.js
-//
-// authenticate(db, secret) returns (req, params) => caller, where caller carries at
-// least { userId, orgId, role, membership, claims }.
 
-const todo = () =>
-  Object.assign(
-    new Error('TODO: server/context.js — authenticate() is yours to write (BRIEF.md §3).'),
-    { code: 'NOT_IMPLEMENTED' }
-  );
+import { verifyAccessToken, assertFresh } from './auth.js';
+import {
+  unauthenticated,
+  notFound,
+} from './http.js';
 
 export function authenticate(db, secret) {
   return function buildContext(req, params) {
-    throw todo();
+    // -----------------------------------------------------------------------
+    // 1. Read bearer token
+    // -----------------------------------------------------------------------
+    const header = req.headers.authorization;
+
+    if (typeof header !== 'string') {
+      throw unauthenticated('access token required');
+    }
+
+    const match = header.match(/^Bearer\s+(.+)$/i);
+
+    if (!match) {
+      throw unauthenticated('access token required');
+    }
+
+    const token = match[1].trim();
+
+    if (!token) {
+      throw unauthenticated('access token required');
+    }
+
+    // -----------------------------------------------------------------------
+    // 2. Verify JWT
+    // -----------------------------------------------------------------------
+    const claims = verifyAccessToken(token, secret);
+
+    const userId = claims.sub;
+    const orgId = claims.org;
+
+    if (
+      typeof userId !== 'string' ||
+      !userId ||
+      typeof orgId !== 'string' ||
+      !orgId
+    ) {
+      throw unauthenticated('invalid access token');
+    }
+
+    // -----------------------------------------------------------------------
+    // 3. Token org is the only org this caller can address.
+    // Different org => invisible 404.
+    // -----------------------------------------------------------------------
+    if (
+      params &&
+      typeof params.orgId === 'string' &&
+      params.orgId !== orgId
+    ) {
+      throw notFound('not found');
+    }
+
+    // -----------------------------------------------------------------------
+    // 4. Find the caller's membership in the token's organization.
+    // -----------------------------------------------------------------------
+    const membership = db
+      .prepare(`
+        SELECT
+          m.id,
+          m.user_id,
+          m.org_id,
+          m.role,
+          m.status,
+          m.perm_version,
+          m.created_at,
+          
+          o.name AS org_name,
+          o.theme AS org_theme
+        FROM memberships m
+        JOIN organizations o ON o.id = m.org_id
+        WHERE m.user_id = ?
+          AND m.org_id = ?
+          AND o.deleted_at IS NULL
+        LIMIT 1
+      `)
+      .get(userId, orgId);
+
+    if (!membership) {
+      throw notFound('not found');
+    }
+
+    // -----------------------------------------------------------------------
+    // 5. Membership must still be active.
+    // -----------------------------------------------------------------------
+    if (membership.status !== 'active') {
+      throw unauthenticated('membership is not active');
+    }
+
+    // -----------------------------------------------------------------------
+    // 6. Permission-version freshness.
+    // -----------------------------------------------------------------------
+    assertFresh(claims, membership);
+
+    // -----------------------------------------------------------------------
+    // 7. Return authenticated caller context.
+    // -----------------------------------------------------------------------
+    return {
+      userId,
+      orgId,
+      role: membership.role,
+      membership,
+      claims,
+    };
   };
 }

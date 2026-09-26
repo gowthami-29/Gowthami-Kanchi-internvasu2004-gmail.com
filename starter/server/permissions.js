@@ -147,7 +147,7 @@ export function resolve(db, { userId, orgId, deviceId = null, now = new Date() }
     if (deny) {
       result[key] = {
         effect: 'deny',
-        source: 'grant',
+        source: `grant:${deny.id}`,
         reason: 'explicit_deny',
         grantId: deny.id
       };
@@ -160,7 +160,7 @@ export function resolve(db, { userId, orgId, deviceId = null, now = new Date() }
     if (allow) {
       result[key] = {
         effect: 'allow',
-        source: 'grant',
+        source: `grant:${allow.id}`,
         reason: 'grant',
         grantId: allow.id
       };
@@ -192,22 +192,117 @@ export function resolve(db, { userId, orgId, deviceId = null, now = new Date() }
 }
 
 // Batched form for list endpoints: { role, byDevice: { [deviceId]: permissions } }.
-export function resolveDevices(db, { userId, orgId, deviceIds, now = new Date() }) {
-  throw todo('resolveDevices');
+export function resolveDevices(
+  db,
+  { userId, orgId, deviceIds, now = new Date() }
+) {
+  const ids = Array.isArray(deviceIds) ? deviceIds : [];
+
+  const byDevice = {};
+
+  for (const deviceId of ids) {
+    const resolved = resolve(db, {
+      userId,
+      orgId,
+      deviceId,
+      now,
+    });
+
+    byDevice[deviceId] = resolved.permissions;
+  }
+
+  const orgResolved = resolve(db, {
+    userId,
+    orgId,
+    deviceId: null,
+    now,
+  });
+
+  return {
+    role: orgResolved.role,
+    byDevice,
+  };
 }
 
 export function can(db, ctx, permission, deviceId) {
-  throw todo('can');
+  const resolved = resolve(db, {
+    userId: ctx.userId,
+    orgId: ctx.orgId,
+    deviceId: deviceId ?? null,
+  });
+
+  return resolved.permissions[permission]?.effect === 'allow';
 }
 
 // Throws 403 carrying the reason code, so a refusal is debuggable.
 export function assertCan(db, ctx, permission, deviceId) {
-  throw todo('assertCan');
+  const resolved = resolve(db, {
+    userId: ctx.userId,
+    orgId: ctx.orgId,
+    deviceId: deviceId ?? null,
+  });
+
+  const entry = resolved.permissions[permission];
+
+  if (entry?.effect !== 'allow') {
+    const error = new Error(`Missing ${permission} permission`);
+    error.reason = entry?.reason || 'missing_permission';
+    error.code = 'FORBIDDEN';
+    error.status = 403;
+    throw error;
+  }
+
+  return true;
 }
 
 // No privilege laundering: you may only grant authority you hold at that scope.
-export function assertMayGrant(db, ctx, patterns, deviceId = null) {
-  throw todo('assertMayGrant');
+export function assertMayGrant(
+  db,
+  ctx,
+  targetUserId,
+  patterns,
+  deviceId = null
+) {
+  if (!Array.isArray(patterns) || patterns.length === 0) {
+    const error = new Error('At least one permission is required');
+    error.reason = 'invalid_permissions';
+    throw error;
+  }
+
+  if (patterns.some((permission) => typeof permission !== 'string' || !permission)) {
+    const error = new Error('Invalid permission');
+    error.reason = 'invalid_permissions';
+    throw error;
+  }
+
+  // A user may never grant authority to themselves.
+  if (ctx.userId === targetUserId) {
+    const error = new Error('You cannot grant permissions to yourself');
+    error.code = 'FORBIDDEN';
+    error.reason = 'self_grant';
+    throw error;
+  }
+
+  const resolved = resolve(db, {
+    userId: ctx.userId,
+    orgId: ctx.orgId,
+    deviceId,
+  });
+
+  for (const permission of patterns) {
+    const effective = resolved.permissions[permission];
+
+    if (effective?.effect !== 'allow') {
+      const error = new Error(
+        `You cannot grant permission you do not hold: ${permission}`
+      );
+      error.code = 'FORBIDDEN';
+      error.reason = 'missing_permission';
+      throw error;
+    }
+  }
+
+  return true;
 }
 
 // The compound check: session:start AND the permission for the requested mode, and a
