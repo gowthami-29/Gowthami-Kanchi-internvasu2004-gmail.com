@@ -39,14 +39,33 @@ The personalized fixture also appeared: the `reviewer` role and `device:reboot` 
 
 ## Phase 1 — token verification
 
-_What did you expect each failure mode to look like before you ran it? Which one behaved
-differently from your expectation, and what did that tell you?_
+### 2026-09-26
+
+I implemented `verifyAccessToken()` in `server/auth.js` using the existing HS256 signing setup.
+
+I checked the token structure before accepting it, decoded the header and payload, verified `alg` and `typ`, recalculated the HMAC signature, and compared signatures using constant-time comparison.
+
+I also enforced the required `exp`, `iss`, `aud`, and `jti` claims. In particular, `exp == now` is rejected because the expiry check is `<= now`.
+
+I ran `node scripts/check-jwt.js`. The suite passed all malformed-token, algorithm-confusion, signature, expiry, issuer/audience, jti, and refresh-token cases.
+
+Result: `ALL PASS — 43 passed, 0 failed`.
 
 ## Phase 2 — caller context and the resolution engine
 
-_This is where most people's first model is wrong. Write down the model you started with, the
-observation that broke it, and the model you moved to. Be specific about the observation._
+The initial permission-engine run stopped at the provided `resolve()` stub with `NOT_IMPLEMENTED`. I reviewed the permission rules, database schema, reference data, and test harness before implementing the resolution logic.
 
+I implemented `resolve()` using the database's permission catalogue and role-permission relationships rather than hardcoding the documented roles or permissions. The implementation handles membership, suspended membership, role baselines, active grants, device scope, time windows, wildcards, explicit deny precedence, and implicit denial.
+
+While running the permission tests, the first implementation failed because I queried `gp.pattern`, but the `grant_permissions` table stores the pattern in the `permission` column. I corrected the query to use `gp.permission`.
+
+I also implemented the compound session authorization check in `assertCanStartSession()`, requiring both `session:start` and the requested device-mode permission.
+
+After the fixes, `node scripts/check-permissions.js` passed with:
+
+`ALL PASS — 35 passed, 0 failed`
+
+The passing tests covered role baselines, auditor/operator separation, device-scoped grants and denies, org-wide deny precedence, multi-org membership, non-membership, time windows, wildcards, compound session checks, and suspended memberships.
 ## Phase 3 — orgs, members, invites
 
 _Anything you had to work out that no document states. Invite lifecycle states are a common

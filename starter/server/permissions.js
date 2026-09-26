@@ -32,7 +32,163 @@ export const MODE_PERMISSION = { view: 'device:view', control: 'device:control',
 // Resolve one user's permission set in one org. deviceId === null means the org-level
 // view; a deviceId means the exact per-device check.
 export function resolve(db, { userId, orgId, deviceId = null, now = new Date() }) {
-  throw todo('resolve');
+  const permissions = db
+    .prepare(`SELECT key FROM permissions ORDER BY key`)
+    .all();
+
+  const membership = db
+    .prepare(`
+      SELECT role, status
+      FROM memberships
+      WHERE org_id = ? AND user_id = ?
+      LIMIT 1
+    `)
+    .get(orgId, userId);
+
+  // Not a member: everything is denied.
+  if (!membership) {
+    const result = {};
+
+    for (const permission of permissions) {
+      result[permission.key] = {
+        effect: 'deny',
+        source: null,
+        reason: 'not_a_member'
+      };
+    }
+
+    return {
+      role: null,
+      permissions: result
+    };
+  }
+
+  // Suspended membership: everything is denied.
+  if (membership.status === 'suspended') {
+    const result = {};
+
+    for (const permission of permissions) {
+      result[permission.key] = {
+        effect: 'deny',
+        source: null,
+        reason: 'suspended'
+      };
+    }
+
+    return {
+      role: membership.role,
+      permissions: result
+    };
+  }
+
+  // Role baseline.
+  const baselineRows = db
+    .prepare(`
+      SELECT permission
+      FROM role_permissions
+      WHERE role = ?
+    `)
+    .all(membership.role);
+
+  const baseline = new Set(
+    baselineRows.map(row => row.permission)
+  );
+
+  // Grants that are active right now and applicable to this scope.
+  const grantRows = db
+    .prepare(`
+      SELECT
+        g.id,
+        g.effect,
+        g.device_id,
+        gp.permission
+      FROM grants g
+      JOIN grant_permissions gp
+        ON gp.grant_id = g.id
+      WHERE g.org_id = ?
+        AND g.user_id = ?
+        AND g.revoked_at IS NULL
+        AND (g.starts_at IS NULL OR g.starts_at <= ?)
+        AND (g.expires_at IS NULL OR ? < g.expires_at)
+        AND (
+          g.device_id IS NULL
+          OR g.device_id = ?
+        )
+    `)
+    .all(
+      orgId,
+      userId,
+      now.toISOString(),
+      now.toISOString(),
+      deviceId
+    );
+
+  function patternMatches(pattern, permission) {
+    if (pattern === '*') return true;
+
+    if (pattern.endsWith(':*')) {
+      const resource = pattern.slice(0, -2);
+      return permission.startsWith(`${resource}:`);
+    }
+
+    return pattern === permission;
+  }
+
+  const result = {};
+
+  for (const { key } of permissions) {
+    const applicable = grantRows.filter(row =>
+      patternMatches(row.permission, key)
+    );
+
+    // Explicit deny always wins.
+    const deny = applicable.find(row => row.effect === 'deny');
+
+    if (deny) {
+      result[key] = {
+        effect: 'deny',
+        source: 'grant',
+        reason: 'explicit_deny',
+        grantId: deny.id
+      };
+      continue;
+    }
+
+    // An explicit allow grant can add a permission to the role baseline.
+    const allow = applicable.find(row => row.effect === 'allow');
+
+    if (allow) {
+      result[key] = {
+        effect: 'allow',
+        source: 'grant',
+        reason: 'grant',
+        grantId: allow.id
+      };
+      continue;
+    }
+
+    // Otherwise use the role baseline.
+    if (baseline.has(key)) {
+      result[key] = {
+        effect: 'allow',
+        source: 'role',
+        reason: 'role_baseline'
+      };
+      continue;
+    }
+
+    // Default deny.
+    result[key] = {
+      effect: 'deny',
+      source: null,
+      reason: 'implicit'
+    };
+  }
+
+  return {
+    role: membership.role,
+    permissions: result
+  };
 }
 
 // Batched form for list endpoints: { role, byDevice: { [deviceId]: permissions } }.
@@ -57,5 +213,34 @@ export function assertMayGrant(db, ctx, patterns, deviceId = null) {
 // The compound check: session:start AND the permission for the requested mode, and a
 // refusal must distinguish WHICH of the two was missing.
 export function assertCanStartSession(db, ctx, mode, deviceId) {
-  throw todo('assertCanStartSession');
+  const requiredPermission = MODE_PERMISSION[mode];
+
+  if (!requiredPermission) {
+    const error = new Error(`Unknown session mode: ${mode}`);
+    error.reason = 'missing_permission';
+    throw error;
+  }
+
+  const resolved = resolve(db, {
+    userId: ctx.userId,
+    orgId: ctx.orgId,
+    deviceId,
+  });
+
+  // The user must have session:start.
+  if (resolved.permissions['session:start']?.effect !== 'allow') {
+    const error = new Error('Missing session:start permission');
+    error.reason = 'missing_permission';
+    throw error;
+  }
+
+  // The user must also have the permission for the requested mode
+  // on this exact device.
+  if (resolved.permissions[requiredPermission]?.effect !== 'allow') {
+    const error = new Error(`Missing ${requiredPermission} permission`);
+    error.reason = 'missing_device_permission';
+    throw error;
+  }
+
+  return undefined;
 }

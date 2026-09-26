@@ -71,12 +71,77 @@ export function issueAccessToken({ userId, orgId, role, permVersion }, secret) {
 // `node scripts/check-jwt.js` is the public test suite for this function.
 // ---------------------------------------------------------------------------
 export function verifyAccessToken(token, secret) {
-  // YOURS TO WRITE. Every failure mode listed above must be a 401 UNAUTHENTICATED.
-  // `node scripts/check-jwt.js` is the public suite for this function.
-  throw Object.assign(
-    new Error('TODO: server/auth.js — verifyAccessToken() is yours to write (AUTH-DATA-MODEL.md §10).'),
-    { code: 'NOT_IMPLEMENTED' }
-  );
+  try {
+    // 1. Token must have exactly three segments.
+    if (typeof token !== 'string') {
+      throw new Error('invalid token');
+    }
+
+    const parts = token.split('.');
+    if (parts.length !== 3 || parts.some((part) => !part)) {
+      throw new Error('invalid token');
+    }
+
+    const [encodedHeader, encodedPayload, encodedSignature] = parts;
+
+    // 2. Decode header and payload as JSON.
+    let header;
+    let claims;
+
+    try {
+      header = JSON.parse(unb64(encodedHeader).toString('utf8'));
+      claims = JSON.parse(unb64(encodedPayload).toString('utf8'));
+    } catch {
+      throw new Error('invalid token');
+    }
+
+    // 3. Validate the algorithm and token type.
+    if (header.alg !== ALG || header.typ !== 'JWT') {
+      throw new Error('invalid token');
+    }
+
+    // 4. Recreate the signature and compare in constant time.
+    const expectedSignature = createHmac('sha256', secret)
+      .update(`${encodedHeader}.${encodedPayload}`)
+      .digest();
+
+    const actualSignature = unb64(encodedSignature);
+
+    if (
+      actualSignature.length !== expectedSignature.length ||
+      !timingSafeEqual(actualSignature, expectedSignature)
+    ) {
+      throw new Error('invalid token');
+    }
+
+    // 5. exp must exist, be a number, and be in the future.
+    const now = Math.floor(Date.now() / 1000);
+
+    if (
+      typeof claims.exp !== 'number' ||
+      !Number.isFinite(claims.exp) ||
+      claims.exp <= now
+    ) {
+      throw new Error('invalid token');
+    }
+
+    // 6. Validate issuer and audience.
+    if (claims.iss !== ISS || claims.aud !== AUD) {
+      throw new Error('invalid token');
+    }
+
+    // 7. jti must exist and not be empty.
+    if (
+      typeof claims.jti !== 'string' ||
+      claims.jti.length === 0
+    ) {
+      throw new Error('invalid token');
+    }
+
+    return claims;
+  } catch {
+    throw unauthenticated('invalid access token');
+  }
 }
 
 
