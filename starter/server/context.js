@@ -17,13 +17,11 @@ export function authenticate(db, secret) {
       throw unauthenticated('access token required');
     }
 
-    const match = header.match(/^Bearer\s+(.+)$/i);
-
-    if (!match) {
+    if (!header.startsWith('Bearer ')) {
       throw unauthenticated('access token required');
     }
 
-    const token = match[1].trim();
+    const token = header.slice('Bearer '.length).trim();
 
     if (!token) {
       throw unauthenticated('access token required');
@@ -71,7 +69,7 @@ export function authenticate(db, secret) {
           m.status,
           m.perm_version,
           m.created_at,
-          
+
           o.name AS org_name,
           o.theme AS org_theme
         FROM memberships m

@@ -12,15 +12,16 @@ export default defineConfig({
   reporter: [['list']],
 
   use: {
-    baseURL: `http://localhost:${PORT}`,
-    trace: 'retain-on-failure',
-  },
+  baseURL: `http://localhost:${PORT}`,
+  channel: 'chrome',
+  trace: 'retain-on-failure',
+},
 
   projects: [{ name: 'chromium', use: { ...devices['Desktop Chrome'] } }],
 
   webServer: {
     command: 'node scripts/load-db.js && node server/index.js',
-    url: `http://localhost:${PORT}/v1/auth/me`,
+    url: `http://localhost:${PORT}/`,
     reuseExistingServer: false,
     timeout: 30_000,
     env: {

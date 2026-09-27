@@ -212,6 +212,20 @@ test('no token is persisted in web storage', async ({ page }) => {
 
 test('a reload restores the session from the refresh cookie', async ({ page }) => {
   await login(page, 'dana@example.test');
+  
+  const refreshCheck = await page.evaluate(async () => {
+  const response = await fetch('/v1/auth/refresh', {
+    method: 'POST',
+    credentials: 'include',
+  });
+
+  return {
+    status: response.status,
+    body: await response.text(),
+  };
+});
+
+
   await page.reload();
   await expect(shell(page)).toHaveAttribute('data-org-id', 'org_acme');
 });
