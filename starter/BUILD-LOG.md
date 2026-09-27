@@ -111,11 +111,19 @@ Successful organization, membership, session, and grant operations also record a
 
 ## Phase 7 — the console
 
-### 2026-09-26
+**### 2026-09-27**
 
-No console/UI work was added during this implementation pass. The evaluated work was concentrated on the API authorization model, organization lifecycle, grants, sessions, audit behavior, and invite lifecycle.
+I completed the console/UI work after the API authorization behavior was validated. The console uses the authenticated session and resolved permissions to control access to Devices, People, Grants, Sessions, Audit, and Admin areas.
 
-I deliberately avoided adding an unrelated UI layer while the required API behavior was still being validated.
+I implemented organization switching from the console sidebar, session restoration through the refresh-token flow, role/permission-aware navigation, device-specific permission handling, grant management, and the Admin organization controls.
+
+I also added and updated Playwright coverage for the console, including login, organization switching, role-specific navigation, grants, admin visibility, and refresh-session restoration.
+
+The final UI test suite passed:
+
+`25 passed, 0 failed`
+
+The production frontend build also completed successfully with `npm run build`.
 
 ## Phase 8 — hardening
 
@@ -133,4 +141,8 @@ I left the existing application structure and database model intact and implemen
 
 The required public API test suite currently passes with `66 passed, 0 failed`.
 
-No known failing API-test requirement remains from the provided test suite.
+The console Playwright suite also passes with `25 passed, 0 failed`.
+
+The production frontend build completes successfully.
+
+No known failing API or UI test requirement remains from the provided test suites.
